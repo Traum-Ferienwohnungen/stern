@@ -23,6 +23,8 @@ import (
 	"path"
 	"regexp"
 
+	"k8s.io/client-go/1.5/pkg/labels"
+
 	"github.com/pkg/errors"
 	"github.com/wercker/stern/stern"
 
@@ -35,7 +37,7 @@ func Run() {
 	app.Name = "stern"
 	app.Usage = "Tail multiple pods and containers from Kubernetes"
 	app.UsageText = "stern [options] pod-query"
-	app.Version = "1.2.0"
+	app.Version = "1.3.0"
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:  "container, c",
@@ -71,10 +73,25 @@ func Run() {
 			Usage: "Regex of log lines to exclude",
 			Value: &cli.StringSlice{},
 		},
+		cli.BoolFlag{
+			Name:  "all-namespaces",
+			Usage: "If present, tail across all namespaces. A specific namespace is ignored even if specified with --namespace.",
+		},
+		cli.StringFlag{
+			Name:  "selector, l",
+			Usage: "Selector (label query) to filter on. If present, default to \".*\" for the pod-query.",
+			Value: "",
+		},
+		cli.Int64Flag{
+			Name:  "tail",
+			Usage: "The number of lines from the end of the logs to show. Defaults to -1, showing all logs.",
+			Value: -1,
+		},
 	}
 
 	app.Action = func(c *cli.Context) error {
-		if len(c.Args()) != 1 {
+		narg := c.NArg()
+		if (narg > 1) || (narg == 0 && c.String("selector") == "") {
 			return cli.ShowAppHelp(c)
 		}
 
@@ -111,7 +128,13 @@ func parseConfig(c *cli.Context) (*stern.Config, error) {
 		kubeConfig = path.Join(u.HomeDir, ".kube/config")
 	}
 
-	pod, err := regexp.Compile(c.Args()[0])
+	var podQuery string
+	if c.NArg() == 0 {
+		podQuery = ".*"
+	} else {
+		podQuery = c.Args()[0]
+	}
+	pod, err := regexp.Compile(podQuery)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to compile regular expression from query")
 	}
@@ -132,6 +155,22 @@ func parseConfig(c *cli.Context) (*stern.Config, error) {
 		exclude = append(exclude, rex)
 	}
 
+	var labelSelector labels.Selector
+	selector := c.String("selector")
+	if selector == "" {
+		labelSelector = labels.Everything()
+	} else {
+		labelSelector, err = labels.Parse(selector)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to parse selector as label selector")
+		}
+	}
+
+	var tailLines *int64
+	if tail := c.Int64("tail"); tail != -1 {
+		tailLines = &tail
+	}
+
 	return &stern.Config{
 		KubeConfig:     kubeConfig,
 		PodQuery:       pod,
@@ -141,5 +180,8 @@ func parseConfig(c *cli.Context) (*stern.Config, error) {
 		Since:          c.Duration("since"),
 		ContextName:    c.String("context"),
 		Namespace:      c.String("namespace"),
+		AllNamespaces:  c.Bool("all-namespaces"),
+		LabelSelector:  labelSelector,
+		TailLines:      tailLines,
 	}, nil
 }
